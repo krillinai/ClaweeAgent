@@ -1,0 +1,27 @@
+name: Source Security
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: 安装固定版本扫描器
+        run: go install github.com/zricethezav/gitleaks/v8@v8.24.3
+      - name: 扫描公开历史
+        run: gitleaks git --redact --config .gitleaks.toml --log-opts=--all .

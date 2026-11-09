@@ -1,0 +1,27 @@
+{
+  "name": "clawee-agent-workspace",
+  "version": "1.0.25",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/krillinai/ClaweeAgent",
+  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "setup": "node scripts/clawee.mjs setup",
+    "client:dev": "node scripts/clawee.mjs client desktop:dev",
+    "web:dev": "node scripts/clawee.mjs client web:dev",
+    "client:test": "node scripts/clawee.mjs client test",
+    "test": "node --test scripts/*.test.mjs",
+    "client:build": "node scripts/clawee.mjs client build",
+    "release:check": "node scripts/release-version.mjs check",
+    "release:version": "node scripts/release-version.mjs set",
+    "desktop:package": "node scripts/clawee.mjs client desktop:package",
+    "desktop:preflight:local": "node scripts/clawee.mjs client desktop:preflight:local",
+    "desktop:preflight:release": "node scripts/clawee.mjs client desktop:preflight:release",
+    "desktop:tag:check": "node scripts/clawee.mjs client desktop:tag:check",
+    "gateway:smoke": "node scripts/gateway-smoke.mjs"
+  }
+}

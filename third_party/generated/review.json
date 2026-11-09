@@ -1,0 +1,19 @@
+{
+  "client": [
+    "@electron-internal/extract-zip@1.0.4",
+    "chromium-pickle-js@0.2.0",
+    "compare-version@0.1.2",
+    "cross-dirname@0.1.0",
+    "err-code@2.0.3",
+    "lazy-val@1.0.5",
+    "node-api-version@0.2.1",
+    "read-binary-file-arch@1.0.6",
+    "stackback@0.0.2",
+    "temp-file@3.4.0",
+    "tmp-promise@3.0.3",
+    "truncate-utf8-bytes@1.0.2"
+  ],
+  "inputs": {
+    "client/pnpm-lock.yaml": "0576ced4ad4c5abb884bbfa208d43236a5f42b08fca06d919bd4308aa3e790fd"
+  }
+}

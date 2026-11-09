@@ -1,0 +1,88 @@
+name: Gateway Compatibility
+on:
+  workflow_dispatch:
+    inputs:
+      gateway_sha:
+        description: aigateway 的完整提交 SHA
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: claw_gateway
+          POSTGRES_DB: claw_gateway_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U claw_gateway -d claw_gateway_test" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - name: 校验固定 Gateway 源码身份
+        env:
+          GATEWAY_SHA: ${{ inputs.gateway_sha }}
+        shell: bash
+        run: '[[ "$GATEWAY_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: krillinai/aigateway
+          ref: ${{ inputs.gateway_sha }}
+          path: .compat-gateway
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: client/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: .compat-gateway/server/go.mod
+          cache-dependency-path: .compat-gateway/server/go.sum
+      - run: pnpm --dir client install --frozen-lockfile
+      - run: pnpm --dir client build
+      - run: pnpm --dir .compat-gateway install --frozen-lockfile
+      - run: pnpm --dir .compat-gateway/server/web install --frozen-lockfile
+      - run: pnpm --dir .compat-gateway/server/web build
+      - name: 构建并启动隔离 Gateway
+        working-directory: .compat-gateway
+        env:
+          CLAWEE_OPS_DIR: ${{ runner.temp }}/gateway-compat-ops
+        shell: bash
+        run: |
+          node scripts/clawee.mjs init --ops-dir "$CLAWEE_OPS_DIR"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import YAML from 'yaml';
+          const path = `${process.env.CLAWEE_OPS_DIR}/configs/config.yaml`;
+          const config = YAML.parse(readFileSync(path, 'utf8'));
+          config.database.url = 'postgres://claw_gateway@127.0.0.1:5432/claw_gateway_test?sslmode=disable';
+          writeFileSync(path, YAML.stringify(config), {mode: 0o600});
+          NODE
+          cd server
+          go build -o "$RUNNER_TEMP/gateway-compat" ./cmd/claw-gateway
+          "$RUNNER_TEMP/gateway-compat" migrate up --config "$CLAWEE_OPS_DIR/configs/config.yaml"
+          nohup "$RUNNER_TEMP/gateway-compat" serve --config "$CLAWEE_OPS_DIR/configs/config.yaml" > "$RUNNER_TEMP/gateway-compat.log" 2>&1 &
+          for attempt in {1..60}; do
+            curl --fail --silent http://127.0.0.1:1904/readyz >/dev/null && exit 0
+            sleep 1
+          done
+          exit 1
+      - name: 用真实客户端适配器验证 Gateway
+        env:
+          CLAWEE_GATEWAY_SMOKE_CONFIG: ${{ runner.temp }}/gateway-compat.json
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomBytes } from 'node:crypto';
+          import { writeFileSync } from 'node:fs';
+          writeFileSync(process.env.CLAWEE_GATEWAY_SMOKE_CONFIG, JSON.stringify({disposable: true, gateway: 'http://127.0.0.1:1904', email: 'compat@example.test', password: randomBytes(24).toString('hex')}), {mode: 0o600});
+          NODE
+          pnpm gateway:smoke
