@@ -19,7 +19,7 @@ describe('skill market runtime exports', () => {
 
     execFileSync(pnpmCommand, pnpmArgs(['--filter', '@clawee/daemon', 'build']), {
       cwd: workspaceDir,
-      stdio: 'pipe'
+      stdio: 'inherit'
     });
 
     const output = execFileSync(
