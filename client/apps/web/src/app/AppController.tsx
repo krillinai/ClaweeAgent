@@ -6743,6 +6743,7 @@ export function AppController(props: AppControllerProps) {
           key={composerAttachmentScope}
           projectId={currentProject?.id ?? ''}
           projectName={currentProjectName}
+          onSearchFiles={workspaceFileService?.search}
           projects={projects}
           showProjectSelector={activeWorkflowDraft ? false : shouldShowComposerProjectSelector({
             conversationEmpty: conversationConfirmedEmpty,
@@ -8495,8 +8496,8 @@ function findEnterpriseMcpUpstream(
 
 function connectorInsertText(serverName: string, displayName?: string): string {
   return displayName === undefined
-    ? `使用 MCP：${serverName} `
-    : `使用连接器「${displayName}」（MCP：${serverName}） `;
+    ? `本次请求请优先使用 MCP：${serverName} `
+    : `本次请求请优先使用连接器「${displayName}」（MCP：${serverName}） `;
 }
 
 function toRuntimeSandbox(permission: ClaweeProject['sandbox'] | undefined): SandboxMode {

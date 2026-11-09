@@ -6,7 +6,9 @@ import type {
   WorkspaceFileRevealResponse,
   WorkspaceFileSaveRequest,
   WorkspaceFileSaveResponse,
-  WorkspaceOfficePreviewResponse
+  WorkspaceOfficePreviewResponse,
+  WorkspaceFileSearchRequest,
+  WorkspaceFileSearchResponse
 } from '@clawee/protocol';
 import type { RuntimeClient } from '../runtime/client.js';
 
@@ -14,6 +16,9 @@ type WorkspaceFileClient = Pick<RuntimeClient, 'get' | 'post' | 'rawGet'>;
 
 export function createWorkspaceFileService(client: WorkspaceFileClient) {
   return {
+    search(input: WorkspaceFileSearchRequest): Promise<WorkspaceFileSearchResponse> {
+      return client.get(`/workspace/files/search?${new URLSearchParams(input)}`);
+    },
     listDirectory(threadId: string, path: string): Promise<WorkspaceDirectoryResponse> {
       return client.get(`/workspace/files/directory?${buildThreadPathQuery(threadId, path)}`);
     },

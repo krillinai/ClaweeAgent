@@ -1070,7 +1070,7 @@ describe('App', () => {
     });
     expect(commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: 'skill', insertText: '$brainstorming ' }),
-      expect.objectContaining({ category: 'mcp', insertText: '使用 MCP：github ' })
+      expect.objectContaining({ category: 'mcp', insertText: '本次请求请优先使用 MCP：github ' })
     ]));
     expect(commands).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'mcp:docs' })
@@ -1122,7 +1122,7 @@ describe('App', () => {
       label: 'github',
       description: 'http · 已开启',
       status: 'enabled',
-      insertText: '使用 MCP：github '
+      insertText: '本次请求请优先使用 MCP：github '
     }, {
       id: 'mcp:docs',
       label: 'docs',
@@ -1176,14 +1176,14 @@ describe('App', () => {
       label: '客户关系管理',
       description: 'enterprise_crm · http · 已开启',
       status: 'enabled',
-      insertText: '使用连接器「客户关系管理」（MCP：enterprise_crm） '
+      insertText: '本次请求请优先使用连接器「客户关系管理」（MCP：enterprise_crm） '
     }]);
     expect(buildComposerSlashCommands(undefined, mcp, catalog)).toEqual([{
       id: 'mcp:enterprise_crm',
       category: 'mcp',
       label: '客户关系管理',
       description: 'enterprise_crm · http · 已开启',
-      insertText: '使用连接器「客户关系管理」（MCP：enterprise_crm） '
+      insertText: '本次请求请优先使用连接器「客户关系管理」（MCP：enterprise_crm） '
     }]);
   });
 

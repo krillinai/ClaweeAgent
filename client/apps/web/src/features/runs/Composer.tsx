@@ -16,6 +16,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FileText,
   Folder,
   FolderPlus,
   Hammer,
@@ -36,7 +37,9 @@ import type {
   CodexModelResponse,
   ReasoningEffort,
   RunQueueReason,
-  RunSubmissionMode
+  RunSubmissionMode,
+  WorkspaceFileSearchRequest,
+  WorkspaceFileSearchResponse
 } from '@clawee/protocol';
 import type { ClaweeProject, ProjectPermission } from '../projects/project-model.js';
 import { ConfirmDialog } from '../../components/dialogs/ConfirmDialog.js';
@@ -74,7 +77,7 @@ export type ComposerSkillRequest = {
 
 export type ComposerSlashCommand = {
   id: string;
-  category: 'skill' | 'mcp' | 'goal';
+  category: 'skill' | 'mcp' | 'goal' | 'file';
   label: string;
   description: string;
   insertText: string;
@@ -107,6 +110,7 @@ type ComposerAttachmentDraft = AttachmentTrayItem & {
 };
 
 type SlashTrigger = {
+  kind: 'skill' | 'mention';
   start: number;
   end: number;
   query: string;
@@ -169,6 +173,7 @@ export function Composer(props: {
   connectorsLoading?: boolean;
   connectorsError?: string;
   onToggleConnector?(connectorId: string, enabled: boolean): Promise<ComposerConnector[]>;
+  onSearchFiles?(request: WorkspaceFileSearchRequest): Promise<WorkspaceFileSearchResponse>;
   queuedItems?: ComposerQueuedItem[];
   draftRequest?: ComposerDraftRequest;
   workflowDraft?: { instruction: string; input: string; firstNode: boolean };
@@ -228,7 +233,22 @@ export function Composer(props: {
     props.connectorsError
   );
   const [connectorUpdatingId, setConnectorUpdatingId] = useState<string>();
-  const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
+  const [slashTrigger, setSlashTriggerState] = useState<SlashTrigger | null>(null);
+  const [fileSearch, setFileSearch] = useState<WorkspaceFileSearchResponse & {
+    status: 'idle' | 'loading' | 'ready' | 'error';
+  }>({ files: [], status: 'idle' });
+  const searchSequenceRef = useRef(0);
+  const searchTriggerRef = useRef<SlashTrigger | null>(null);
+  const composingRef = useRef(false);
+  const setSlashTrigger = useCallback((next: SlashTrigger | null) => {
+    const previous = searchTriggerRef.current;
+    if (next === null || previous?.kind !== next.kind || previous?.query !== next.query) {
+      searchSequenceRef.current += 1;
+      setFileSearch({ files: [], status: 'idle' });
+    }
+    searchTriggerRef.current = next;
+    setSlashTriggerState(next);
+  }, []);
   const [attachmentDrafts, setAttachmentDrafts] = useState<ComposerAttachmentDraft[]>([]);
   const [directoryPaths, setDirectoryPaths] = useState<string[]>([]);
   const [selectingDirectory, setSelectingDirectory] = useState(false);
@@ -399,6 +419,7 @@ export function Composer(props: {
       closeFloatingMenu();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (composingRef.current || event.isComposing || event.keyCode === 229) return;
       if (activeFloatingMenu === 'model'
         && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
         const options = Array.from(modelMenuRef.current?.querySelectorAll<HTMLButtonElement>(
@@ -562,13 +583,59 @@ export function Composer(props: {
     || selectedSkillCommand !== undefined
     || attachmentDrafts.length > 0
     || directoryPaths.length > 0;
-  const filteredSlashCommands = useMemo(
-    () => filterSlashCommands(slashCommands, slashTrigger?.query ?? ''),
-    [slashCommands, slashTrigger?.query]
-  );
+  const mentionMenuOpen = slashTrigger?.kind === 'mention';
+  const searchProject = props.projects.find(project => project.id === props.projectId);
+  const searchWorkspaceKey = JSON.stringify([
+    props.projectId, searchProject?.cwd, searchProject?.canonicalCwd,
+    searchProject?.directoryState, searchProject?.status
+  ]);
+  const canSearchFiles = searchProject !== undefined
+    && searchProject.canonicalCwd !== null
+    && searchProject.status !== 'archived'
+    && searchProject.directoryState !== 'missing'
+    && props.onSearchFiles !== undefined;
+  const fileQuery = mentionMenuOpen ? slashTrigger.query : '';
+
+  useLayoutEffect(() => {
+    setSlashTrigger(null);
+  }, [searchWorkspaceKey, props.onSearchFiles, setSlashTrigger]);
+
+  useEffect(() => {
+    const sequence = ++searchSequenceRef.current;
+    if (!mentionMenuOpen || !fileQuery || !canSearchFiles) return;
+    setFileSearch({ files: [], status: 'loading' });
+    const timer = window.setTimeout(() => {
+      const isCurrent = () => searchSequenceRef.current === sequence
+        && searchTriggerRef.current?.kind === 'mention'
+        && searchTriggerRef.current.query === fileQuery;
+      void props.onSearchFiles!({ projectId: props.projectId, query: fileQuery }).then(
+        result => { if (isCurrent()) setFileSearch({ files: result.files.slice(0, 20), status: 'ready' }); },
+        () => { if (isCurrent()) setFileSearch({ files: [], status: 'error' }); }
+      );
+    }, 200);
+    return () => {
+      window.clearTimeout(timer);
+      searchSequenceRef.current += 1;
+    };
+  }, [mentionMenuOpen, fileQuery, canSearchFiles, searchWorkspaceKey, props.projectId, props.onSearchFiles]);
+
+  const filteredSlashCommands: ComposerSlashCommand[] = mentionMenuOpen
+    ? [
+        ...fileSearch.files.map(file => ({
+          id: `file:${file.path}`, category: 'file' as const,
+          label: file.name, description: file.path, insertText: `@${JSON.stringify(file.path)} `
+        })),
+        ...enabledConnectors.filter(connector => connector.insertText !== undefined
+          && `${connector.label} ${connector.id.replace(/^mcp:/, '')}`.toLowerCase().includes(fileQuery.toLowerCase())
+        ).map(connector => ({
+          id: connector.id, category: 'mcp' as const, label: connector.label,
+          description: connector.id.replace(/^mcp:/, ''), insertText: connector.insertText!
+        }))
+      ]
+    : filterSlashCommands(slashCommands, slashTrigger?.query ?? '');
   const groupedSlashCommands = useMemo(
-    () => groupSlashCommands(filteredSlashCommands),
-    [filteredSlashCommands]
+    () => groupSlashCommands(filteredSlashCommands, mentionMenuOpen),
+    [filteredSlashCommands, mentionMenuOpen]
   );
   const slashMenuOpen = slashTrigger !== null;
   const attachmentBlockReason = hasImageAttachments && imageInputUnsupportedReason !== undefined
@@ -742,7 +809,11 @@ export function Composer(props: {
   const updatePrompt = (value: string, caret: number) => {
     promptRevisionRef.current += 1;
     setPrompt(value);
-    const nextTrigger = props.disabled ? null : findSlashTrigger(value, caret);
+    const prefixLength = findLeadingSkillCommand(value, slashCommands)?.insertText.length ?? 0;
+    const mention = findMentionTrigger(value.slice(prefixLength), caret - prefixLength);
+    const nextTrigger = props.disabled ? null : mention === null
+      ? findSlashTrigger(value, caret)
+      : { ...mention, start: mention.start + prefixLength, end: mention.end + prefixLength };
     setSlashTrigger(nextTrigger);
     if (nextTrigger !== null) setOpenMenu(null);
   };
@@ -840,6 +911,8 @@ export function Composer(props: {
   };
 
   const handlePromptKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter' && event.shiftKey) return;
     if (slashTrigger !== null) {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -869,6 +942,10 @@ export function Composer(props: {
           applySlashCommand(command);
           return;
         }
+        if (mentionMenuOpen && event.key === 'Enter') {
+          event.preventDefault();
+          return;
+        }
       }
     }
 
@@ -881,6 +958,7 @@ export function Composer(props: {
       event.preventDefault();
       promptRevisionRef.current += 1;
       setPrompt(visiblePrompt);
+      setSlashTrigger(null);
       return;
     }
 
@@ -1404,7 +1482,19 @@ export function Composer(props: {
             prompt,
             selectedSkillPrefix.length + event.currentTarget.selectionStart
           )}
+          onSelect={(event) => {
+            if (!mentionMenuOpen) return;
+            const { selectionStart, selectionEnd } = event.currentTarget;
+            if (selectionStart !== selectionEnd) {
+              setSlashTrigger(null);
+              return;
+            }
+            const caret = selectedSkillPrefix.length + selectionStart;
+            if (caret !== slashTrigger.end) updatePrompt(prompt, caret);
+          }}
           onKeyDown={handlePromptKeyDown}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onPaste={handlePaste}
           placeholder={
             props.disabled
@@ -1418,16 +1508,24 @@ export function Composer(props: {
             id="composer-slash-menu"
             className="composer-popover composer-slash-menu"
             role="listbox"
-            aria-label="能力菜单"
+            aria-label={mentionMenuOpen ? '文件与 MCP 菜单' : '能力菜单'}
           >
-            {props.slashCommandsLoading ? <div className="composer-slash-status" role="status">正在加载本机能力</div> : null}
-            {props.slashCommandsError ? <div className="composer-slash-status composer-slash-status-error">{props.slashCommandsError}</div> : null}
-            {!props.slashCommandsLoading && filteredSlashCommands.length === 0 ? (
+            {!mentionMenuOpen && props.slashCommandsLoading ? <div className="composer-slash-status" role="status">正在加载本机能力</div> : null}
+            {!mentionMenuOpen && props.slashCommandsError ? <div className="composer-slash-status composer-slash-status-error">{props.slashCommandsError}</div> : null}
+            {!mentionMenuOpen && !props.slashCommandsLoading && filteredSlashCommands.length === 0 ? (
               <div className="composer-slash-status">没有匹配的能力</div>
             ) : null}
             {groupedSlashCommands.map(group => (
               <div key={group.category} className="composer-slash-group" role="presentation">
-                <div className="composer-slash-group-label">{slashCategoryLabel(group.category)}</div>
+                <div className="composer-slash-group-label">{group.category === 'file' ? `文件 · ${props.projectName}` : slashCategoryLabel(group.category)}</div>
+                {group.category === 'file' && group.commands.length === 0 ? (
+                  <div className="composer-slash-status" role="status">{
+                    !canSearchFiles ? '当前没有可用的项目工作区'
+                      : !fileQuery ? '输入名称搜索工作区文件'
+                        : fileSearch.status === 'error' ? '文件搜索失败，请重试'
+                          : fileSearch.status === 'ready' ? '没有匹配的文件' : '正在搜索工作区文件'
+                  }</div>
+                ) : null}
                 {group.commands.map(command => {
                   const commandIndex = filteredSlashCommands.findIndex(item => item.id === command.id);
                   return (
@@ -1923,11 +2021,18 @@ function findSlashTrigger(value: string, caret: number): SlashTrigger | null {
   if (token.slice(1).includes('/')) return null;
 
   return {
+    kind: 'skill',
     start: tokenStart,
     end: caret,
     query: token.slice(1),
     activeIndex: 0
   };
+}
+
+function findMentionTrigger(value: string, caret: number): SlashTrigger | null {
+  const match = /(?:^|\s)@([^\s]*)$/.exec(value.slice(0, caret));
+  if (match === null || match[1]!.startsWith('"')) return null;
+  return { kind: 'mention', start: caret - match[1]!.length - 1, end: caret, query: match[1]!, activeIndex: 0 };
 }
 
 function filterSlashCommands(commands: ComposerSlashCommand[], query: string): ComposerSlashCommand[] {
@@ -1943,13 +2048,13 @@ function filterSlashCommands(commands: ComposerSlashCommand[], query: string): C
   });
 }
 
-function groupSlashCommands(commands: ComposerSlashCommand[]): Array<{
+function groupSlashCommands(commands: ComposerSlashCommand[], mention = false): Array<{
   category: ComposerSlashCommand['category'];
   commands: ComposerSlashCommand[];
 }> {
-  return (['skill'] as const)
+  return (mention ? ['file', 'mcp'] as const : ['skill'] as const)
     .map(category => ({ category, commands: commands.filter(command => command.category === category) }))
-    .filter(group => group.commands.length > 0);
+    .filter(group => group.category === 'file' || group.commands.length > 0);
 }
 
 function nextSlashCommandIndex(current: number, length: number, delta: 1 | -1): number {
@@ -1987,10 +2092,13 @@ function findLeadingSkillCommand(
 
 function slashCategoryLabel(category: ComposerSlashCommand['category']): string {
   if (category === 'skill') return 'Skills';
+  if (category === 'mcp') return 'MCP';
   return category;
 }
 
 function slashCategoryIcon(category: ComposerSlashCommand['category']) {
   if (category === 'skill') return <Sparkles size={15} />;
+  if (category === 'file') return <FileText size={15} />;
+  if (category === 'mcp') return <McpIcon name="mcp" size="compact" />;
   return null;
 }

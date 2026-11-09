@@ -12,6 +12,31 @@ afterEach(() => {
 });
 
 describe('Codex app-server client', () => {
+  it('专用搜索客户端超时不影响模型和历史客户端，后续可重启，关闭后拒绝新请求', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clawee-search-client-'));
+    const codexBin = createFakeAppServer(tempDir);
+    const search = createCodexAppServerClient({ codexBin, codexHome: join(tempDir, 'home'), requestTimeoutMs: 1_500 });
+    const catalog = createCodexAppServerClient({ codexBin, codexHome: join(tempDir, 'home') });
+    try {
+      const timeout = expect(search.request('fuzzyFileSearch', { query: 'hang', roots: [tempDir] })).rejects.toThrow('timed out');
+      await expect(catalog.request('thread/list', {})).resolves.toEqual({ data: [{ id: 'thread-1' }] });
+      await expect(catalog.request('model/list', {})).resolves.toEqual({ data: [] });
+      await timeout;
+      await expect(search.request('fuzzyFileSearch', { query: 'recover', roots: [tempDir] })).resolves.toEqual({ files: [] });
+      await expect(catalog.request('thread/list', {})).resolves.toEqual({ data: [{ id: 'thread-1' }] });
+      const pending = expect(search.request('fuzzyFileSearch', { query: 'hang', roots: [tempDir] })).rejects.toThrow();
+      await search.close();
+      await pending;
+      await expect(search.request('fuzzyFileSearch', {})).rejects.toThrow('closed');
+    } finally {
+      await search.close();
+      await catalog.close();
+    }
+    const unused = createCodexAppServerClient({ codexBin, codexHome: join(tempDir, 'unused') });
+    await unused.close();
+    await expect(unused.request('fuzzyFileSearch', {})).rejects.toThrow('closed');
+  });
+
   it('reads history responses larger than 1 MiB without losing the frame', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'clawee-app-server-client-'));
     const client = createCodexAppServerClient({
@@ -131,6 +156,14 @@ rl.on('line', line => {
   }
   if (message.method === 'initialized') return;
   fs.appendFileSync(requestsPath, message.method + '\\n');
+  if (message.method === 'fuzzyFileSearch') {
+    if (message.params.query !== 'hang') send({ id: message.id, result: { files: [] } });
+    return;
+  }
+  if (message.method === 'model/list') {
+    send({ id: message.id, result: { data: [] } });
+    return;
+  }
   if (message.method === 'thread/turns/list') {
     send({ id: message.id, result: { data: 'x'.repeat(message.params.bytes) } });
     return;

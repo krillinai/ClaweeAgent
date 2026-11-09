@@ -202,6 +202,15 @@ export type WorkspaceFileMetaSummary = Pick<
   'kind' | 'mime' | 'size' | 'mtimeMs' | 'previewable' | 'editable' | 'readonly' | 'reason'
 >;
 
+export type WorkspaceFileSearchRequest = {
+  projectId: string;
+  query: string;
+};
+
+export type WorkspaceFileSearchResponse = {
+  files: Array<{ name: string; path: string }>;
+};
+
 export type WorkspaceFilePathRequest = {
   threadId: string;
   path: string;

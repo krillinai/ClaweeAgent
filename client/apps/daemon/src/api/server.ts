@@ -114,6 +114,7 @@ import { isServerSkillDisclosureRequest } from '../task-mcp/server-skill-input-g
 import { MCP_CHAIN_TIMEOUT_MS } from '../task-mcp/constants.js';
 import { createDefaultRevealExecutor } from '../workspace-files/reveal.js';
 import { createWorkspaceFileService } from '../workspace-files/service.js';
+import { createWorkspaceFileSearchService } from '../workspace-files/search.js';
 import { prepareSchedulerStartup } from '../startup.js';
 import type { EnterpriseCredentialStore } from '../enterprise/credential-store-2026-07-30.js';
 import {
@@ -260,6 +261,7 @@ export type BuildServerInput = {
   codexSessionProvider?: CodexSessionProvider;
   codexModelCatalog?: CodexModelCatalog;
   codexAppServerClient?: CodexAppServerRequestClient;
+  workspaceFileSearchClient?: CodexAppServerRequestClient;
   codexEnv?: Record<string, string>;
   modelServiceRuntime?: ModelServiceRuntime;
   mcpPresetProvider?: McpPresetProvider;
@@ -532,6 +534,15 @@ export async function buildServer(input: BuildServerInput) {
   const workspaceFileService = createWorkspaceFileService({
     getThread: (id) => threadManager.getPublicThread(id),
     revealExecutor: createDefaultRevealExecutor()
+  });
+  const workspaceFileSearchClient = input.workspaceFileSearchClient ?? createCodexAppServerClient({
+    codexBin,
+    codexHome,
+    env: input.codexEnv
+  });
+  const workspaceFileSearchService = createWorkspaceFileSearchService({
+    projects: projectManager,
+    client: workspaceFileSearchClient
   });
   const profileManager = createProfileManager({ codexHome: resolvedCodexHome });
   const skillManager = createSkillManager({ codexHome: resolvedCodexHome, db });
@@ -1287,7 +1298,7 @@ export async function buildServer(input: BuildServerInput) {
     origin: () => enterpriseOrigin.origin,
     environment: () => { let runtime; let version = 'unavailable'; try { runtime = getCodexRuntimeStatus(); version = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version; } catch { /* 版本不可用会在环境中明确记录。 */ } return { app_version: version, daemon_version: version, platform: process.platform, arch: process.arch, runtime_version: runtime?.version ?? 'unavailable', electron_version: 'unavailable', build_sha: process.env.CLAWEE_BUILD_SHA ?? 'unavailable', connection_status: enterpriseSessionManager.getSnapshot().status }; },
   }));
-  await registerWorkspaceFileRoutes(server, workspaceFileService);
+  await registerWorkspaceFileRoutes(server, workspaceFileService, workspaceFileSearchService);
   await registerSearchRoutes(server, {
     provider: codexSessionProvider,
     threadManager

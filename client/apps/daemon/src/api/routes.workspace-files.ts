@@ -9,12 +9,30 @@ import type {
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { WorkspaceFileError } from '../workspace-files/errors.js';
 import type { WorkspaceFileService } from '../workspace-files/service.js';
+import type { WorkspaceFileSearchService } from '../workspace-files/search.js';
 import { apiError } from './errors.js';
 
 export async function registerWorkspaceFileRoutes(
   server: FastifyInstance,
-  service: WorkspaceFileService
+  service: WorkspaceFileService,
+  searchService: WorkspaceFileSearchService
 ): Promise<void> {
+  server.get('/workspace/files/search', async (request, reply) => {
+    const query = request.query;
+    if (!isPlainObject(query)
+      || typeof query.projectId !== 'string' || !query.projectId.trim()
+      || typeof query.query !== 'string' || query.query.length > 256) {
+      return reply.code(400).send(apiError('VALIDATION_FAILED', 'projectId 和 query 必须为字符串，搜索词不能超过 256 个字符'));
+    }
+    try {
+      return reply.header('Cache-Control', 'no-store').send(await searchService.search({
+        projectId: query.projectId, query: query.query
+      }));
+    } catch (error) {
+      return sendWorkspaceFileError(reply, error);
+    }
+  });
+
   server.get('/workspace/files/directory', async (request, reply) => {
     const parsed = parseThreadPathQuery(request.query);
     if (!parsed.ok) return reply.code(400).send(apiError('VALIDATION_FAILED', parsed.message));

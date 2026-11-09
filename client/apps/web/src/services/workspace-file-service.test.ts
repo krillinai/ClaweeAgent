@@ -29,6 +29,18 @@ afterEach(() => {
 });
 
 describe('WorkspaceFileService', () => {
+  it('按项目搜索文件，沿用鉴权并编码中文、空格和反斜杠', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ files: [] })));
+    const service = createWorkspaceFileService(new RuntimeClient({
+      baseUrl: 'http://runtime.test', token: 'runtime-secret', fetchImpl
+    }));
+    expect(await service.search({ projectId: 'project-1', query: '需求 a\\b' })).toEqual({ files: [] });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://runtime.test/workspace/files/search?projectId=project-1&query=%E9%9C%80%E6%B1%82+a%5Cb',
+      expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer runtime-secret' } })
+    );
+  });
+
   it('下载普通文件时沿用 Bearer 鉴权，URL 不含 Token，返回原字节和安全文件名', async () => {
     const bytes = new Uint8Array([0, 255, 128, 42]);
     const fetchImpl = vi.fn(async () => new Response(bytes));
