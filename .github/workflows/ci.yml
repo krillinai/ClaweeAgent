@@ -23,8 +23,8 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
-      - run: pnpm --dir .. test
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir .. test
       - run: pnpm codex:runtime:verify
       - run: pnpm test
       - run: pnpm release:verify-scheduled-task-upgrade
