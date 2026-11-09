@@ -618,6 +618,7 @@ function createHttpClient(): EnterpriseHttpClient {
     getSharedFileDetail: vi.fn(),
     downloadSharedFileContent: vi.fn(),
     uploadSharedFileContent: vi.fn(),
+    removeSharedFile: vi.fn(),
     listSkills: vi.fn(async () => [remoteSkill()]),
     listSkillSpaces: vi.fn(async () => ({ spaces: [] })),
     uploadSkillVersion: vi.fn(),

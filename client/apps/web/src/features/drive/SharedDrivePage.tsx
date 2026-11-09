@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Replace,
   Search,
+  Trash2,
   Upload,
   WifiOff,
   X
@@ -28,16 +29,18 @@ import {
   type FormEvent,
   type ReactNode
 } from 'react';
+import { ConfirmDialog } from '../../components/dialogs/ConfirmDialog.js';
 import { useModalBehavior } from '../../components/dialogs/use-modal-behavior.js';
 import './shared-drive.css';
 import { SharedFilePreviewDialog } from './SharedFilePreviewDialog.js';
 
 export type SharedDriveOperationState = {
-  kind: 'download' | 'upload' | 'replace';
+  kind: 'download' | 'upload' | 'replace' | 'delete';
   fileId?: string;
   fileName: string;
   status: 'working' | 'failed' | 'requires_overwrite';
   error?: string;
+  progress?: { completed: number; total: number };
 };
 
 export type SharedDrivePageProps = {
@@ -64,8 +67,9 @@ export type SharedDrivePageProps = {
   onSelectSpace(spaceId?: string): void;
   onSearch(query: string): void;
   onLoadMoreFiles(): void;
-  onUpload(spaceId: string | undefined, file: File): void;
+  onUpload(spaceId: string | undefined, files: File[]): void;
   onReplace(target: EnterpriseSharedFileResponse, file: File): void;
+  onDelete(target: EnterpriseSharedFileResponse): void;
   onDownload(target: EnterpriseSharedFileResponse, overwrite: boolean): void;
   readPreview?(fileId: string, signal?: AbortSignal): Promise<Response>;
 };
@@ -80,6 +84,7 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
   const [selectionError, setSelectionError] = useState<string>();
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [previewFile, setPreviewFile] = useState<EnterpriseSharedFileResponse>();
+  const [deleteTarget, setDeleteTarget] = useState<EnterpriseSharedFileResponse>();
   useModalBehavior(spacePickerRef, { open: spacePickerOpen, onClose: () => setSpacePickerOpen(false) });
   const spaces = [...(props.spaces ?? [])].sort((a, b) => Number(b.personalOwnerUserId === props.session.account?.subjectId) - Number(a.personalOwnerUserId === props.session.account?.subjectId));
   const personalSpace = spaces.find(space => space.personalOwnerUserId === props.session.account?.subjectId);
@@ -93,6 +98,11 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
   );
   const writableSpaces = props.spaces?.filter(space => space.permissions.write) ?? [];
   const operationWorking = props.operation?.status === 'working';
+  const uploadProgress = props.operation !== undefined
+    && props.operation.status === 'working'
+    && props.operation.kind === 'upload'
+    ? props.operation.progress
+    : undefined;
 
   useEffect(() => {
     setSearchValue(props.query);
@@ -140,20 +150,34 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
   }
 
   function handleUploadSelection(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     event.target.value = '';
-    if (file === undefined) return;
+    if (files.length === 0) return;
     const targetSpaceId = pendingDefaultUploadRef.current ? personalSpace?.spaceId : selectedSpace?.permissions.write
       ? selectedSpace.spaceId
       : pendingUploadSpaceIdRef.current;
     pendingDefaultUploadRef.current = false;
     pendingUploadSpaceIdRef.current = undefined;
-    const error = validateFile(file, props.maxFileSizeBytes);
-    if (error !== undefined) {
-      setSelectionError(error);
-      return;
+    const validFiles: File[] = [];
+    const oversizedFiles: File[] = [];
+    for (const file of files) {
+      if (validateFile(file, props.maxFileSizeBytes) === undefined) {
+        validFiles.push(file);
+      } else {
+        oversizedFiles.push(file);
+      }
     }
-    props.onUpload(targetSpaceId, file);
+    if (oversizedFiles.length > 0) {
+      const names = oversizedFiles.slice(0, 5).map(file => file.name);
+      const remaining = oversizedFiles.length - names.length;
+      setSelectionError(
+        `单个文件不能超过 ${formatBytes(props.maxFileSizeBytes)}：${names.join('、')}`
+        + `${remaining > 0 ? ` 等 ${remaining} 个` : ''}。`
+      );
+    }
+    if (validFiles.length > 0) {
+      props.onUpload(targetSpaceId, validFiles);
+    }
   }
 
   function handleReplacementSelection(event: ChangeEvent<HTMLInputElement>) {
@@ -327,6 +351,7 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
                   ref={uploadInputRef}
                   className="shared-drive-file-input"
                   type="file"
+                  multiple
                   aria-label="选择上传到共享网盘的文件"
                   disabled={operationWorking}
                   onChange={handleUploadSelection}
@@ -338,7 +363,11 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
                   onClick={chooseUpload}
                 >
                   <Upload size={15} aria-hidden="true" />
-                  <span>{operationWorking ? '处理中' : '上传文件'}</span>
+                  <span>
+                    {uploadProgress
+                      ? `上传中 ${uploadProgress.completed}/${uploadProgress.total}`
+                      : operationWorking ? '处理中' : '上传文件'}
+                  </span>
                 </button>
                 <input
                   ref={replaceInputRef}
@@ -447,6 +476,17 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
                                       <Replace size={14} aria-hidden="true" />
                                     </button>
                                   ) : null}
+                                  {space?.permissions.delete ? (
+                                    <button
+                                      type="button"
+                                      aria-label={`删除 ${file.fileName}`}
+                                      title="删除文件"
+                                      disabled={operationWorking}
+                                      onClick={() => setDeleteTarget(file)}
+                                    >
+                                      <Trash2 size={14} aria-hidden="true" />
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     aria-label={
@@ -513,6 +553,25 @@ export function SharedDrivePage(props: SharedDrivePageProps) {
           onClose={() => setPreviewFile(undefined)}
         />
       ) : null}
+      <ConfirmDialog
+        open={deleteTarget !== undefined}
+        title="删除文件"
+        description={
+          deleteTarget === undefined
+            ? ''
+            : `删除文件“${deleteTarget.fileName}”（${deleteTarget.logicalPath}）后将永久删除，不可恢复。`
+        }
+        confirmLabel="删除"
+        cancelLabel="取消"
+        destructive
+        busy={operationWorking}
+        onConfirm={() => {
+          if (deleteTarget === undefined) return;
+          setDeleteTarget(undefined);
+          props.onDelete(deleteTarget);
+        }}
+        onCancel={() => setDeleteTarget(undefined)}
+      />
       {spacePickerOpen ? (
         <div
           className="shared-drive-space-picker-backdrop"

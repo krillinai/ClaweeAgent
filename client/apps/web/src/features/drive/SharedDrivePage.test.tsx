@@ -24,13 +24,19 @@ const signedInSession: EnterpriseSessionResponse = {
 const writableSpace = createSpace({
   spaceId: 'space-design',
   name: '设计资料',
-  permissions: { read: true, write: true }
+  permissions: { read: true, write: true, delete: false }
 });
 
 const readOnlySpace = createSpace({
   spaceId: 'space-policy',
   name: '公司制度',
-  permissions: { read: true, write: false }
+  permissions: { read: true, write: false, delete: false }
+});
+
+const deletableSpace = createSpace({
+  spaceId: 'space-design',
+  name: '设计资料',
+  permissions: { read: true, write: true, delete: true }
 });
 
 const designFile = createFile({
@@ -53,7 +59,7 @@ describe('SharedDrivePage', () => {
     await userEvent.click(personalUpload);
     const file = new File(['report'], 'report.txt', { type: 'text/plain' });
     await userEvent.upload(screen.getByLabelText('选择上传到共享网盘的文件'), file);
-    expect(upload).toHaveBeenCalledWith(undefined, file);
+    expect(upload).toHaveBeenCalledWith(undefined, [file]);
   });
 
   it('renders Runtime, session, service, and login gates', async () => {
@@ -222,7 +228,7 @@ describe('SharedDrivePage', () => {
       upload
     );
 
-    expect(onUpload).toHaveBeenCalledWith(writableSpace.spaceId, upload);
+    expect(onUpload).toHaveBeenCalledWith(writableSpace.spaceId, [upload]);
   });
 
   it('uploads, replaces, downloads, and requires explicit local overwrite', async () => {
@@ -244,7 +250,7 @@ describe('SharedDrivePage', () => {
       screen.getByLabelText('选择上传到共享网盘的文件'),
       upload
     );
-    expect(onUpload).toHaveBeenCalledWith(writableSpace.spaceId, upload);
+    expect(onUpload).toHaveBeenCalledWith(writableSpace.spaceId, [upload]);
 
     await user.click(screen.getByRole('button', { name: '替换 design.md' }));
     const replacement = new File(['replace'], 'local.md', {
@@ -301,6 +307,123 @@ describe('SharedDrivePage', () => {
     );
     expect(onUpload).not.toHaveBeenCalled();
   });
+
+  it('uploads multiple selected files in a single onUpload call', async () => {
+    const user = userEvent.setup();
+    const onUpload = vi.fn();
+    renderDrive({
+      spaces: [writableSpace],
+      selectedSpaceId: writableSpace.spaceId,
+      onUpload
+    });
+    const first = new File(['first'], 'first.txt', { type: 'text/plain' });
+    const second = new File(['second'], 'second.txt', { type: 'text/plain' });
+    await user.upload(
+      screen.getByLabelText('选择上传到共享网盘的文件'),
+      [first, second]
+    );
+    expect(onUpload).toHaveBeenCalledOnce();
+    expect(onUpload).toHaveBeenCalledWith(writableSpace.spaceId, [first, second]);
+  });
+
+  it('skips oversized files in a multi selection and lists their names', async () => {
+    const user = userEvent.setup();
+    const onUpload = vi.fn();
+    renderDrive({
+      spaces: [writableSpace],
+      selectedSpaceId: writableSpace.spaceId,
+      maxFileSizeBytes: 4,
+      onUpload
+    });
+    const oversized = new File(['12345'], 'large.bin');
+    const valid = new File(['ok'], 'small.txt', { type: 'text/plain' });
+    await user.upload(
+      screen.getByLabelText('选择上传到共享网盘的文件'),
+      [oversized, valid]
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('large.bin');
+    expect(onUpload).toHaveBeenCalledOnce();
+    expect(onUpload).toHaveBeenCalledWith(writableSpace.spaceId, [valid]);
+  });
+
+  it('shows batch upload progress on the upload button', () => {
+    renderDrive({
+      spaces: [writableSpace],
+      selectedSpaceId: writableSpace.spaceId,
+      operation: {
+        kind: 'upload',
+        fileName: 'first.txt',
+        status: 'working',
+        progress: { completed: 2, total: 3 }
+      }
+    });
+    expect(screen.getByRole('button', { name: '上传中 2/3' }))
+      .toBeInTheDocument();
+  });
+
+  it('shows the delete action only when the file space grants delete permission', () => {
+    const view = renderDrive({
+      spaces: [writableSpace],
+      selectedSpaceId: writableSpace.spaceId,
+      files: [designFile]
+    });
+    expect(screen.queryByRole('button', { name: '删除 design.md' }))
+      .not.toBeInTheDocument();
+
+    view.rerender(createDrive({
+      spaces: [deletableSpace],
+      selectedSpaceId: deletableSpace.spaceId,
+      files: [designFile]
+    }));
+    expect(screen.getByRole('button', { name: '删除 design.md' }))
+      .toBeInTheDocument();
+
+    view.rerender(createDrive({
+      spaces: [readOnlySpace],
+      selectedSpaceId: readOnlySpace.spaceId,
+      files: [designFile]
+    }));
+    expect(screen.queryByRole('button', { name: '删除 design.md' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('confirms permanent deletion with file details before calling onDelete', async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    renderDrive({
+      spaces: [deletableSpace],
+      selectedSpaceId: deletableSpace.spaceId,
+      files: [designFile],
+      onDelete
+    });
+
+    await user.click(screen.getByRole('button', { name: '删除 design.md' }));
+    const dialog = screen.getByRole('alertdialog', { name: '删除文件' });
+    expect(within(dialog).getByText('删除文件“design.md”（docs/design.md）后将永久删除，不可恢复。'))
+      .toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '删除' }));
+
+    expect(onDelete).toHaveBeenCalledWith(designFile);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('cancels deletion without calling onDelete', async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    renderDrive({
+      spaces: [deletableSpace],
+      selectedSpaceId: deletableSpace.spaceId,
+      files: [designFile],
+      onDelete
+    });
+
+    await user.click(screen.getByRole('button', { name: '删除 design.md' }));
+    const dialog = screen.getByRole('alertdialog', { name: '删除文件' });
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
 });
 
 function renderDrive(overrides: Partial<SharedDrivePageProps> = {}) {
@@ -330,6 +453,7 @@ function createDrive(overrides: Partial<SharedDrivePageProps> = {}) {
       onLoadMoreFiles={vi.fn()}
       onUpload={vi.fn()}
       onReplace={vi.fn()}
+      onDelete={vi.fn()}
       onDownload={vi.fn()}
       {...overrides}
     />
@@ -344,7 +468,7 @@ function createSpace(
     name: '共享空间',
     description: '企业共享文件',
     updatedAt: '2026-08-05T08:00:00Z',
-    permissions: { read: true, write: false },
+    permissions: { read: true, write: false, delete: false },
     ...overrides
   };
 }

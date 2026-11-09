@@ -65,6 +65,10 @@ export type EnterpriseSharedDriveManager = {
     expectedArtifact?: EnterpriseWorkflowArtifact | SharedDriveArtifact;
     assertIdentity?(): void;
   }): Promise<EnterpriseSharedFileDownloadResponse>;
+  deleteFile(input: {
+    fileId: string;
+    expectedRevision: number;
+  }): Promise<void>;
 };
 
 export class EnterpriseSharedDriveManagerError extends Error {
@@ -436,6 +440,21 @@ export function createEnterpriseSharedDriveManager(input: {
     }
   }
 
+  async function deleteFile(request: {
+    fileId: string;
+    expectedRevision: number;
+  }): Promise<void> {
+    const fileId = validateIdentifier(request.fileId);
+    validateRequiredRevision(request.expectedRevision);
+    const accessToken = await requireToken();
+    await runRemote(
+      () => input.httpClient.removeSharedFile(accessToken, {
+        fileId,
+        expectedRevision: request.expectedRevision
+      })
+    );
+  }
+
   async function uploadWorkflowFile(request: {
     taskId: string; idempotencyKey: string; fileName: string; expectedSizeBytes: number; expectedSha256?: string; content: AsyncIterable<Uint8Array>; assertIdentity(): void;
   }): Promise<EnterpriseWorkflowArtifact> {
@@ -463,7 +482,8 @@ export function createEnterpriseSharedDriveManager(input: {
     getFileDetail,
     getFilePreview,
     uploadFile,
-    downloadToProject
+    downloadToProject,
+    deleteFile
   };
 }
 
@@ -733,6 +753,15 @@ function validateExpectedRevision(value: number | undefined): void {
   }
 }
 
+function validateRequiredRevision(value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new EnterpriseSharedDriveManagerError(
+      'ENTERPRISE_INVALID_REQUEST',
+      400
+    );
+  }
+}
+
 function validateExpectedSize(value: number, maximum: number): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new EnterpriseSharedDriveManagerError(
@@ -785,6 +814,7 @@ function defaultStatusCode(code: RuntimeErrorCode): number {
       return 404;
     case 'ENTERPRISE_SHARED_FILE_ALREADY_EXISTS':
     case 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT':
+    case 'ENTERPRISE_SHARED_FILE_IN_USE':
     case 'ENTERPRISE_SHARED_FILE_LOCAL_EXISTS':
       return 409;
     case 'ENTERPRISE_SHARED_FILE_TOO_LARGE':

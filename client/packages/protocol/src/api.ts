@@ -1554,6 +1554,7 @@ export type EnterpriseKnowledgeDocumentUploadResponse = {
 export type EnterpriseSharedSpacePermissions = {
   read: boolean;
   write: boolean;
+  delete: boolean;
 };
 
 export type EnterpriseSharedSpaceResponse = {

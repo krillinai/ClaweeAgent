@@ -1098,7 +1098,7 @@ describe('enterprise HTTP client', () => {
             name: '发布资料',
             description: '',
             updated_at: '2026-08-06T07:20:00Z',
-            permissions: { read: true }
+            permissions: { read: true, delete: true }
           }
         ],
         meta: {
@@ -1131,14 +1131,14 @@ describe('enterprise HTTP client', () => {
           name: '设计资料',
           description: '团队设计文件',
           updatedAt: '2026-08-06T07:30:00Z',
-          permissions: { read: true, write: false }
+          permissions: { read: true, write: false, delete: false }
         },
         {
           spaceId: 'space_2',
           name: '发布资料',
           description: '',
           updatedAt: '2026-08-06T07:20:00Z',
-          permissions: { read: true, write: false }
+          permissions: { read: true, write: false, delete: true }
         }
       ],
       meta: {
@@ -1291,6 +1291,53 @@ describe('enterprise HTTP client', () => {
       fileId: 'file_1',
       revision: 4,
       created: false
+    });
+  });
+
+  it('removes a shared file with the expected revision and an empty 204 response', async () => {
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe(`${ORIGIN}/api/v1/app/shared-files/remove`);
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        file_id: 'file/方案',
+        expected_revision: 3
+      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get('Authorization')).toBe('Bearer enterprise-access-token');
+      expect(headers.get('Content-Type')).toBe('application/json');
+      return new Response(null, { status: 204 });
+    });
+    const client = createEnterpriseHttpClient({ fetch, origin: ORIGIN });
+
+    await expect(client.removeSharedFile('enterprise-access-token', {
+      fileId: 'file/方案',
+      expectedRevision: 3
+    })).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [400, 'invalid_request', 'ENTERPRISE_INVALID_REQUEST'],
+    [404, 'shared_file_not_found', 'ENTERPRISE_SHARED_FILE_NOT_FOUND'],
+    [409, 'revision_conflict', 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT'],
+    [409, 'file_in_use', 'ENTERPRISE_SHARED_FILE_IN_USE']
+  ])('maps shared file remove error %s %s to %s', async (
+    status,
+    upstreamCode,
+    code
+  ) => {
+    const fetch = vi.fn(async () => jsonResponse({
+      error: { code: upstreamCode }
+    }, status));
+    const client = createEnterpriseHttpClient({ fetch, origin: ORIGIN });
+
+    await expect(client.removeSharedFile('enterprise-access-token', {
+      fileId: 'file_1',
+      expectedRevision: 3
+    })).rejects.toMatchObject({
+      code,
+      statusCode: status,
+      upstreamCode
     });
   });
 

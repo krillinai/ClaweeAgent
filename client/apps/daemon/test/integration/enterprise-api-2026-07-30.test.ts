@@ -25,6 +25,9 @@ import type {
 import type {
   EnterpriseMcpManager
 } from '../../src/enterprise/mcp-manager-2026-08-07.js';
+import {
+  EnterpriseSharedDriveManagerError
+} from '../../src/enterprise/shared-drive-manager-2026-08-06.js';
 import type {
   EnterpriseSharedDriveManager
 } from '../../src/enterprise/shared-drive-manager-2026-08-06.js';
@@ -1062,7 +1065,7 @@ describe('enterprise runtime API', () => {
     expect(spaces.json()).toMatchObject({
       spaces: [{
         spaceId: 'space_1',
-        permissions: { read: true, write: false }
+        permissions: { read: true, write: false, delete: false }
       }],
       meta: { maxFileSizeBytes: 1073741824 }
     });
@@ -1155,6 +1158,87 @@ describe('enterprise runtime API', () => {
       fileId: 'file/design',
       projectId: 'project_1',
       overwrite: true
+    });
+  });
+
+  it('removes shared files through the authenticated route and maps conflicts', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clawee-enterprise-api-'));
+    const enterpriseSharedDriveManager = createSharedDriveManager();
+    server = await buildServer({
+      token: 'secret',
+      dataDir: tempDir,
+      codexHome: join(tempDir, 'codex-home'),
+      enterpriseAgentIdentityStore: createAgentIdentityStore(),
+      enterpriseCredentialStore: createStore(),
+      enterpriseHttpClient: createClient(),
+      enterpriseSharedDriveManager,
+      enterpriseOrigin: 'https://enterprise.example'
+    });
+
+    const unauthenticated = await server.inject({
+      method: 'POST',
+      url: '/enterprise/shared-files/remove',
+      payload: { fileId: 'file_1', expectedRevision: 3 }
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(enterpriseSharedDriveManager.deleteFile).not.toHaveBeenCalled();
+
+    const removed = await authRequest(
+      'POST',
+      '/enterprise/shared-files/remove',
+      { fileId: 'file/方案', expectedRevision: 3 }
+    );
+    expect(removed.statusCode).toBe(204);
+    expect(removed.body).toBe('');
+    expect(enterpriseSharedDriveManager.deleteFile).toHaveBeenCalledWith({
+      fileId: 'file/方案',
+      expectedRevision: 3
+    });
+
+    const invalid = await authRequest(
+      'POST',
+      '/enterprise/shared-files/remove',
+      { fileId: 'file_1', expectedRevision: 0 }
+    );
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({
+      error: { code: 'VALIDATION_FAILED' }
+    });
+    expect(enterpriseSharedDriveManager.deleteFile).toHaveBeenCalledOnce();
+
+    vi.mocked(enterpriseSharedDriveManager.deleteFile).mockRejectedValueOnce(
+      new EnterpriseSharedDriveManagerError(
+        'ENTERPRISE_SHARED_FILE_NOT_FOUND',
+        404
+      )
+    );
+    const missing = await authRequest(
+      'POST',
+      '/enterprise/shared-files/remove',
+      { fileId: 'missing', expectedRevision: 3 }
+    );
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({
+      error: { code: 'ENTERPRISE_SHARED_FILE_NOT_FOUND' }
+    });
+
+    vi.mocked(enterpriseSharedDriveManager.deleteFile).mockRejectedValueOnce(
+      new EnterpriseSharedDriveManagerError(
+        'ENTERPRISE_SHARED_FILE_IN_USE',
+        409
+      )
+    );
+    const inUse = await authRequest(
+      'POST',
+      '/enterprise/shared-files/remove',
+      { fileId: 'file_1', expectedRevision: 3 }
+    );
+    expect(inUse.statusCode).toBe(409);
+    expect(inUse.json()).toMatchObject({
+      error: {
+        code: 'ENTERPRISE_SHARED_FILE_IN_USE',
+        message: 'Enterprise shared file is in use'
+      }
     });
   });
 
@@ -1271,6 +1355,7 @@ function createClient(
     getSharedFileDetail: vi.fn(),
     downloadSharedFileContent: vi.fn(),
     uploadSharedFileContent: vi.fn(),
+    removeSharedFile: vi.fn(),
     listSkills: vi.fn(async () => []),
     listSkillSpaces: vi.fn(async () => ({ spaces: [] })),
     uploadSkillVersion: vi.fn(),
@@ -1482,7 +1567,7 @@ function createSharedDriveManager(): EnterpriseSharedDriveManager {
         name: '设计资料',
         description: '团队设计文件',
         updatedAt: '2026-08-06T07:30:00Z',
-        permissions: { read: true, write: false }
+        permissions: { read: true, write: false, delete: false }
       }],
       meta: {
         nextCursor: '',
@@ -1525,6 +1610,7 @@ function createSharedDriveManager(): EnterpriseSharedDriveManager {
       sha256: 'a'.repeat(64),
       revision: 3,
       overwritten: input.overwrite
-    }))
+    })),
+    deleteFile: vi.fn(async () => undefined)
   };
 }

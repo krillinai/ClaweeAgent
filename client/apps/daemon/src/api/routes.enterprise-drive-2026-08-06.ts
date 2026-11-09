@@ -35,6 +35,11 @@ const downloadBodySchema = z.object({
   overwrite: z.boolean().optional()
 }).strict();
 
+const removeBodySchema = z.object({
+  fileId: z.string().min(1).max(256),
+  expectedRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+}).strict();
+
 export async function registerEnterpriseDriveRoutes(
   server: FastifyInstance,
   manager: EnterpriseSharedDriveManager,
@@ -194,6 +199,20 @@ export async function registerEnterpriseDriveRoutes(
       }
     }
   );
+
+  server.post('/enterprise/shared-files/remove', async (request, reply) => {
+    const parsed = removeBodySchema.safeParse(request.body);
+    if (!parsed.success) return invalidRequest(reply);
+    try {
+      await manager.deleteFile({
+        fileId: parsed.data.fileId,
+        expectedRevision: parsed.data.expectedRevision
+      });
+      return reply.code(204).send();
+    } catch (error) {
+      return sendDriveError(reply, error);
+    }
+  });
 }
 
 function invalidRequest(reply: FastifyReply) {
@@ -228,6 +247,8 @@ function driveErrorMessage(code: string): string {
       return 'Enterprise shared file already exists';
     case 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT':
       return 'Enterprise shared file revision changed';
+    case 'ENTERPRISE_SHARED_FILE_IN_USE':
+      return 'Enterprise shared file is in use';
     case 'ENTERPRISE_SHARED_FILE_TOO_LARGE':
       return 'Enterprise shared file is too large';
     case 'ENTERPRISE_SHARED_FILE_LENGTH_MISMATCH':

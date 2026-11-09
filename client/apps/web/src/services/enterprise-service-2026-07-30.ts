@@ -291,6 +291,15 @@ export function createEnterpriseService(client: ClientLike) {
         SHARED_FILE_CONTENT_TYPE
       );
     },
+    deleteSharedFile(input: {
+      fileId: string;
+      expectedRevision: number;
+    }): Promise<void> {
+      return client.post<void>('/enterprise/shared-files/remove', {
+        fileId: input.fileId,
+        expectedRevision: input.expectedRevision
+      });
+    },
     downloadSharedFile(input: {
       fileId: string;
       projectId: string;

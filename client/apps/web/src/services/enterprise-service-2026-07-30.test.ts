@@ -289,6 +289,26 @@ describe('enterprise service', () => {
       { projectId: 'project_1', overwrite: true }
     );
   });
+
+  it('removes shared files by id with the expected revision and propagates errors', async () => {
+    const post = vi.fn(async (_path: string, _body?: unknown) => ({}));
+    const service = createEnterpriseService(createClient({ post }));
+
+    await service.deleteSharedFile({
+      fileId: 'file/方案',
+      expectedRevision: 3
+    });
+    expect(post).toHaveBeenCalledWith('/enterprise/shared-files/remove', {
+      fileId: 'file/方案',
+      expectedRevision: 3
+    });
+
+    const failure = new Error('ENTERPRISE_SHARED_FILE_REVISION_CONFLICT');
+    post.mockRejectedValueOnce(failure);
+    await expect(
+      service.deleteSharedFile({ fileId: 'file/方案', expectedRevision: 4 })
+    ).rejects.toBe(failure);
+  });
 });
 
 function createClient(

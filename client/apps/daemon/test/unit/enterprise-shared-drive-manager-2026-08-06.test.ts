@@ -402,6 +402,51 @@ describe('enterprise shared drive manager', () => {
     })).rejects.toMatchObject({ code: 'PATH_ESCAPE', statusCode: 403 });
     expect(downloadSharedFileContent).not.toHaveBeenCalled();
   });
+
+  it('deletes shared files with the expected revision and maps in-use conflicts', async () => {
+    tempDir = createTempDirectory();
+    const removeSharedFile = vi.fn(async () => undefined);
+    const manager = createManager({ removeSharedFile });
+
+    await expect(manager.deleteFile({
+      fileId: ' file/方案 ',
+      expectedRevision: 3
+    })).resolves.toBeUndefined();
+    expect(removeSharedFile).toHaveBeenCalledOnce();
+    expect(removeSharedFile).toHaveBeenCalledWith('enterprise-token', {
+      fileId: 'file/方案',
+      expectedRevision: 3
+    });
+
+    await expect(manager.deleteFile({
+      fileId: '   ',
+      expectedRevision: 3
+    })).rejects.toMatchObject({
+      code: 'ENTERPRISE_INVALID_REQUEST',
+      statusCode: 400
+    });
+    await expect(manager.deleteFile({
+      fileId: 'file_1',
+      expectedRevision: 0
+    })).rejects.toMatchObject({
+      code: 'ENTERPRISE_INVALID_REQUEST',
+      statusCode: 400
+    });
+    expect(removeSharedFile).toHaveBeenCalledOnce();
+
+    const inUseManager = createManager({
+      removeSharedFile: vi.fn(async () => {
+        throw new EnterpriseHttpError('ENTERPRISE_SHARED_FILE_IN_USE', 'response');
+      })
+    });
+    await expect(inUseManager.deleteFile({
+      fileId: 'file_1',
+      expectedRevision: 3
+    })).rejects.toMatchObject({
+      code: 'ENTERPRISE_SHARED_FILE_IN_USE',
+      statusCode: 409
+    });
+  });
 });
 
 function createManager(
@@ -477,6 +522,7 @@ function createHttpClient(
     getSharedFileDetail: vi.fn(async () => sharedFile()),
     downloadSharedFileContent: vi.fn(),
     uploadSharedFileContent: vi.fn(),
+    removeSharedFile: vi.fn(),
     listSkills: vi.fn(async () => []),
     listSkillSpaces: vi.fn(),
     uploadSkillVersion: vi.fn(),
@@ -518,7 +564,7 @@ function sharedSpace() {
     name: '设计资料',
     description: '团队设计文件',
     updatedAt: '2026-08-06T07:30:00Z',
-    permissions: { read: true, write: false }
+    permissions: { read: true, write: false, delete: false }
   };
 }
 

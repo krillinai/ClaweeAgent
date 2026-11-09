@@ -4691,14 +4691,14 @@ export function AppController(props: AppControllerProps) {
     }
   }
 
-  async function uploadEnterpriseSharedFile(spaceId: string | undefined, file: File) {
+  async function uploadEnterpriseSharedFiles(spaceId: string | undefined, files: File[]) {
     const space = enterpriseSharedSpaces?.find(item => item.spaceId === spaceId);
     if (spaceId !== undefined && space?.permissions.write !== true) return;
-    await mutateEnterpriseSharedFile({
+    if (files.length === 0) return;
+    await mutateEnterpriseSharedFiles({
       kind: 'upload',
       spaceId,
-      logicalPath: file.name,
-      file
+      items: files.map(file => ({ logicalPath: file.name, file }))
     });
   }
 
@@ -4708,24 +4708,23 @@ export function AppController(props: AppControllerProps) {
   ) {
     const space = enterpriseSharedSpaces?.find(item => item.spaceId === target.spaceId);
     if (space?.permissions.write !== true) return;
-    await mutateEnterpriseSharedFile({
+    await mutateEnterpriseSharedFiles({
       kind: 'replace',
       spaceId: target.spaceId,
-      logicalPath: target.logicalPath,
-      expectedRevision: target.revision,
-      file,
-      fileId: target.fileId
+      items: [{
+        logicalPath: target.logicalPath,
+        expectedRevision: target.revision,
+        file,
+        fileId: target.fileId
+      }]
     });
   }
 
-  async function mutateEnterpriseSharedFile(request: {
-    kind: 'upload' | 'replace';
-    spaceId?: string;
-    logicalPath: string;
-    expectedRevision?: number;
-    file: File;
-    fileId?: string;
-  }) {
+  async function deleteEnterpriseSharedFile(target: EnterpriseSharedFileResponse) {
+    const space = enterpriseSharedSpaces?.find(
+      item => item.spaceId === target.spaceId
+    );
+    if (space?.permissions.delete !== true) return;
     const activeEnterpriseService = enterpriseServiceRef.current;
     if (
       activeEnterpriseService === null
@@ -4737,29 +4736,19 @@ export function AppController(props: AppControllerProps) {
     enterpriseSharedMutationInFlightRef.current = true;
     setEnterpriseSharedNotice(undefined);
     setEnterpriseSharedOperation({
-      kind: request.kind,
-      ...(request.fileId === undefined ? {} : { fileId: request.fileId }),
-      fileName: request.logicalPath,
+      kind: 'delete',
+      fileId: target.fileId,
+      fileName: target.logicalPath,
       status: 'working'
     });
     try {
-      const response = await activeEnterpriseService.uploadSharedFile({
-        spaceId: request.spaceId,
-        logicalPath: request.logicalPath,
-        ...(request.expectedRevision === undefined
-          ? {}
-          : { expectedRevision: request.expectedRevision }),
-        file: request.file
+      await activeEnterpriseService.deleteSharedFile({
+        fileId: target.fileId,
+        expectedRevision: target.revision
       });
       if (!isCurrentEnterpriseSharedDriveRuntime(generation, activeEnterpriseService)) return;
       setEnterpriseSharedOperation(undefined);
-      setEnterpriseSharedNotice(
-        response.reconciled
-          ? `${response.logicalPath} 已在服务端确认创建成功`
-          : request.kind === 'upload'
-            ? `${response.logicalPath} 已上传`
-            : `${response.logicalPath} 已替换为 revision ${response.revision}`
-      );
+      setEnterpriseSharedNotice(`${target.logicalPath} 已删除`);
       setEnterpriseSharedFilesReloadKey(current => current + 1);
       setEnterpriseSharedSpacesReloadKey(current => current + 1);
     } catch (error) {
@@ -4769,49 +4758,195 @@ export function AppController(props: AppControllerProps) {
         setEnterpriseSharedOperation(undefined);
         return;
       }
-      let message = formatEnterpriseSharedDriveError(
-        error,
-        request.kind === 'upload' ? '共享文件上传失败' : '共享文件替换失败'
-      );
+      let message = formatEnterpriseSharedDriveError(error, '共享文件删除失败');
       if (error instanceof ApiClientError) {
-        if (error.code === 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT') {
-          const currentRevision = error.details?.currentRevision;
-          message = typeof currentRevision === 'number'
-            ? `远端文件已更新到 revision ${currentRevision}，请刷新后重新替换`
-            : '远端文件已被其他成员修改，请刷新后重新替换';
+        if (error.code === 'ENTERPRISE_SHARED_FILE_IN_USE') {
+          message = '该文件已被流程任务引用，不能删除';
+        } else if (error.code === 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT') {
+          message = '文件已被更新，请刷新后重试';
           setEnterpriseSharedFilesReloadKey(current => current + 1);
         } else if (
-          error.code === 'ENTERPRISE_SHARED_FILE_WRITE_FORBIDDEN'
-          || error.code === 'ENTERPRISE_FORBIDDEN'
+          error.code === 'ENTERPRISE_SHARED_FILE_NOT_FOUND'
+          || error.code === 'ENTERPRISE_SHARED_SPACE_NOT_FOUND'
         ) {
-          message = '当前账户已没有该共享空间的写入权限';
-          setEnterpriseSharedSpacesReloadKey(current => current + 1);
-        } else if (error.code === 'ENTERPRISE_SHARED_FILE_ALREADY_EXISTS') {
-          message = '相同网盘路径已存在，请在文件列表中选择替换';
-          setEnterpriseSharedFilesReloadKey(current => current + 1);
-        } else if (
-          error.code === 'ENTERPRISE_SHARED_SPACE_NOT_FOUND'
-          || error.code === 'ENTERPRISE_SHARED_FILE_NOT_FOUND'
-        ) {
-          message = '共享空间或文件已不可访问，正在刷新列表';
+          message = '该共享文件不存在或当前账户已无权访问';
           setEnterpriseSharedSpacesReloadKey(current => current + 1);
           setEnterpriseSharedFilesReloadKey(current => current + 1);
         } else if (error.code === 'ENTERPRISE_SERVICE_UNAVAILABLE') {
-          message = request.kind === 'upload'
-            ? '上传结果未知，请刷新文件列表后再决定是否重试'
-            : '替换结果未知，请刷新并核对 revision 后再操作';
+          message = '删除结果未知，请刷新文件列表后确认';
           setEnterpriseSharedFilesReloadKey(current => current + 1);
         }
       }
       setEnterpriseSharedOperation({
-        kind: request.kind,
-        ...(request.fileId === undefined ? {} : { fileId: request.fileId }),
-        fileName: request.logicalPath,
+        kind: 'delete',
+        fileId: target.fileId,
+        fileName: target.logicalPath,
         status: 'failed',
         error: message
       });
     } finally {
       enterpriseSharedMutationInFlightRef.current = false;
+    }
+  }
+
+  async function mutateEnterpriseSharedFiles(request: {
+    kind: 'upload' | 'replace';
+    spaceId?: string;
+    items: Array<{
+      logicalPath: string;
+      file: File;
+      expectedRevision?: number;
+      fileId?: string;
+    }>;
+  }) {
+    const activeEnterpriseService = enterpriseServiceRef.current;
+    if (
+      activeEnterpriseService === null
+      || enterpriseSessionRef.current.status !== 'signed_in'
+      || enterpriseSharedMutationInFlightRef.current
+      || request.items.length === 0
+    ) return;
+
+    const generation = enterpriseSharedDriveGenerationRef.current;
+    const total = request.items.length;
+    enterpriseSharedMutationInFlightRef.current = true;
+    setEnterpriseSharedNotice(undefined);
+    let successes = 0;
+    const failures: Array<{ logicalPath: string; message: string }> = [];
+    let singleFailure: { fileName: string; fileId?: string; message: string } | undefined;
+    let unprocessed = 0;
+    let refreshFiles = false;
+    let refreshSpaces = false;
+    let singleNotice: string | undefined;
+    try {
+      for (const [index, item] of request.items.entries()) {
+        setEnterpriseSharedOperation({
+          kind: request.kind,
+          ...(item.fileId === undefined ? {} : { fileId: item.fileId }),
+          fileName: item.logicalPath,
+          status: 'working',
+          ...(total > 1 ? { progress: { completed: index, total } } : {})
+        });
+        try {
+          const response = await activeEnterpriseService.uploadSharedFile({
+            spaceId: request.spaceId,
+            logicalPath: item.logicalPath,
+            ...(item.expectedRevision === undefined
+              ? {}
+              : { expectedRevision: item.expectedRevision }),
+            file: item.file
+          });
+          successes += 1;
+          if (!isCurrentEnterpriseSharedDriveRuntime(generation, activeEnterpriseService)) return;
+          if (total === 1) {
+            singleNotice = response.reconciled
+              ? `${response.logicalPath} 已在服务端确认创建成功`
+              : request.kind === 'upload'
+                ? `${response.logicalPath} 已上传`
+                : `${response.logicalPath} 已替换为 revision ${response.revision}`;
+          }
+        } catch (error) {
+          if (!isCurrentEnterpriseSharedDriveRuntime(generation, activeEnterpriseService)) return;
+          if (isEnterpriseUnauthorized(error)) {
+            handleEnterpriseSessionExpired();
+            setEnterpriseSharedOperation(undefined);
+            return;
+          }
+          let message = formatEnterpriseSharedDriveError(
+            error,
+            request.kind === 'upload' ? '共享文件上传失败' : '共享文件替换失败'
+          );
+          let stop = false;
+          if (error instanceof ApiClientError) {
+            if (error.code === 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT') {
+              const currentRevision = error.details?.currentRevision;
+              message = typeof currentRevision === 'number'
+                ? `远端文件已更新到 revision ${currentRevision}，请刷新后重新替换`
+                : '远端文件已被其他成员修改，请刷新后重新替换';
+              refreshFiles = true;
+            } else if (
+              error.code === 'ENTERPRISE_SHARED_FILE_WRITE_FORBIDDEN'
+              || error.code === 'ENTERPRISE_FORBIDDEN'
+            ) {
+              message = '当前账户已没有该共享空间的写入权限';
+              refreshSpaces = true;
+              stop = true;
+            } else if (error.code === 'ENTERPRISE_SHARED_FILE_ALREADY_EXISTS') {
+              message = '相同网盘路径已存在，请在文件列表中选择替换';
+              refreshFiles = true;
+            } else if (
+              error.code === 'ENTERPRISE_SHARED_SPACE_NOT_FOUND'
+              || error.code === 'ENTERPRISE_SHARED_FILE_NOT_FOUND'
+            ) {
+              message = '共享空间或文件已不可访问，正在刷新列表';
+              refreshSpaces = true;
+              refreshFiles = true;
+              stop = true;
+            } else if (error.code === 'ENTERPRISE_SERVICE_UNAVAILABLE') {
+              message = request.kind === 'upload'
+                ? '上传结果未知，请刷新文件列表后再决定是否重试'
+                : '替换结果未知，请刷新并核对 revision 后再操作';
+              refreshFiles = true;
+              stop = true;
+            } else if (error.code === 'ENTERPRISE_SHARED_FILE_STORAGE_UNAVAILABLE') {
+              stop = true;
+            }
+          } else {
+            stop = true;
+          }
+          failures.push({ logicalPath: item.logicalPath, message });
+          if (total === 1) {
+            singleFailure = {
+              fileName: item.logicalPath,
+              ...(item.fileId === undefined ? {} : { fileId: item.fileId }),
+              message
+            };
+          }
+          if (stop) {
+            unprocessed = total - index - 1;
+            break;
+          }
+        }
+      }
+    } finally {
+      enterpriseSharedMutationInFlightRef.current = false;
+    }
+    if (!isCurrentEnterpriseSharedDriveRuntime(generation, activeEnterpriseService)) return;
+    if (failures.length === 0) {
+      setEnterpriseSharedOperation(undefined);
+      setEnterpriseSharedNotice(
+        total === 1 ? singleNotice : `已上传 ${successes} 个文件`
+      );
+    } else if (singleFailure !== undefined) {
+      setEnterpriseSharedOperation({
+        kind: request.kind,
+        ...(singleFailure.fileId === undefined ? {} : { fileId: singleFailure.fileId }),
+        fileName: singleFailure.fileName,
+        status: 'failed',
+        error: singleFailure.message
+      });
+    } else if (failures.length > 0) {
+      if (successes > 0) setEnterpriseSharedNotice(`已上传 ${successes} 个文件`);
+      const listed = failures
+        .slice(0, 3)
+        .map(failure => `${failure.logicalPath}（${failure.message}）`)
+        .join('；');
+      const remainingFailures = failures.length - 3;
+      const summary = `${failures.length} 个文件上传失败：${listed}`
+        + `${remainingFailures > 0 ? `；等 ${remainingFailures} 个` : ''}`
+        + `${unprocessed > 0 ? `；其余 ${unprocessed} 个文件未处理` : ''}`;
+      setEnterpriseSharedOperation({
+        kind: request.kind,
+        fileName: '批量上传',
+        status: 'failed',
+        error: summary
+      });
+    }
+    if (total > 1 || successes > 0 || refreshFiles) {
+      setEnterpriseSharedFilesReloadKey(current => current + 1);
+    }
+    if (total > 1 || successes > 0 || refreshSpaces) {
+      setEnterpriseSharedSpacesReloadKey(current => current + 1);
     }
   }
 
@@ -7135,8 +7270,11 @@ export function AppController(props: AppControllerProps) {
       onSearch={searchEnterpriseSharedFiles}
       onLoadMoreFiles={() => void loadMoreEnterpriseSharedFiles()}
       readPreview={enterpriseService?.getSharedFilePreview}
-      onUpload={(spaceId, file) => void uploadEnterpriseSharedFile(spaceId, file)}
+      onUpload={(spaceId, files) => void uploadEnterpriseSharedFiles(spaceId, files)}
       onReplace={(target, file) => void replaceEnterpriseSharedFile(target, file)}
+      onDelete={target => {
+        void deleteEnterpriseSharedFile(target);
+      }}
       onDownload={(target, overwrite) => {
         void downloadEnterpriseSharedFile(target, overwrite);
       }}
@@ -8255,6 +8393,8 @@ function formatEnterpriseSharedDriveError(error: unknown, fallback: string): str
       return '相同网盘路径已存在';
     case 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT':
       return '远端文件已被其他成员修改';
+    case 'ENTERPRISE_SHARED_FILE_IN_USE':
+      return '该文件已被流程任务引用，不能删除';
     case 'ENTERPRISE_SHARED_FILE_TOO_LARGE':
       return '共享文件超过服务端允许大小';
     case 'ENTERPRISE_SHARED_FILE_LENGTH_MISMATCH':

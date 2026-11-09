@@ -1909,6 +1909,232 @@ describe('App', () => {
       ]);
   });
 
+  it('deletes shared files through Runtime and reports in-use conflicts', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/drive';
+    const hostBridge = createHostBridge();
+    hostBridge.readConnectionConfig = async () => ({
+      baseUrl: 'http://127.0.0.1:60764',
+      token: 'runtime-token'
+    });
+    let deleteRequests = 0;
+    const deleteBodies: unknown[] = [];
+    const runtimeFetch = async (
+      input: RequestInfo | URL,
+      init?: RequestInit
+    ) => {
+      const url = String(input);
+      const projectApiResponse = handleDefaultProjectApiRequest(url, init);
+      if (projectApiResponse !== undefined) return projectApiResponse;
+      if (url.endsWith('/healthz')) return jsonResponse({ ok: true });
+      if (url.endsWith('/codex/status')) {
+        return jsonResponse(createCodexStatusResponse());
+      }
+      if (url.endsWith('/threads?status=active&limit=50')) {
+        return jsonResponse({ threads: [] });
+      }
+      if (url.endsWith('/enterprise/session')) {
+        return jsonResponse(createEnterpriseSessionResponse());
+      }
+      if (url.endsWith('/enterprise/shared-spaces?limit=100')) {
+        return jsonResponse(createSharedSpaceListResponse([
+          createSharedSpaceResponse({
+            permissions: { read: true, write: false, delete: true }
+          })
+        ]));
+      }
+      if (url.endsWith('/enterprise/shared-files?limit=100')) {
+        return jsonResponse(createSharedFileListResponse([
+          createSharedFileResponse()
+        ]));
+      }
+      if (
+        url.endsWith('/enterprise/shared-files/remove')
+        && init?.method === 'POST'
+      ) {
+        deleteRequests += 1;
+        deleteBodies.push(JSON.parse(String(init.body)));
+        if (deleteRequests === 1) {
+          return new Response(null, { status: 204 });
+        }
+        if (deleteRequests === 2) {
+          return jsonResponse({
+            error: {
+              code: 'ENTERPRISE_SHARED_FILE_IN_USE',
+              message: 'The shared file is in use'
+            }
+          }, { status: 409 });
+        }
+        return jsonResponse({
+          error: {
+            code: 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT',
+            message: 'The shared file has been updated'
+          }
+        }, { status: 409 });
+      }
+      throw new Error(`Unexpected request ${url}`);
+    };
+
+    render(
+      <App
+        fileService={createFileService()}
+        hostBridge={hostBridge}
+        runtimeFetch={runtimeFetch}
+        subscribeRunEvents={async () => undefined}
+      />
+    );
+
+    expect(await screen.findByText('design.md')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '共享网盘' }))
+      .toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: '删除 design.md' }));
+    const dialog = await screen.findByRole('alertdialog', { name: '删除文件' });
+    await user.click(within(dialog).getByRole('button', { name: '删除' }));
+    expect(await screen.findByText('docs/design.md 已删除'))
+      .toBeInTheDocument();
+    expect(deleteBodies).toEqual([
+      { fileId: 'file-design', expectedRevision: 3 }
+    ]);
+
+    await user.click(await screen.findByRole('button', { name: '删除 design.md' }));
+    const conflictDialog = await screen.findByRole('alertdialog', {
+      name: '删除文件'
+    });
+    await user.click(
+      within(conflictDialog).getByRole('button', { name: '删除' })
+    );
+    expect(await screen.findByText('该文件已被流程任务引用，不能删除'))
+      .toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: '删除 design.md' }));
+    const revisionDialog = await screen.findByRole('alertdialog', {
+      name: '删除文件'
+    });
+    await user.click(
+      within(revisionDialog).getByRole('button', { name: '删除' })
+    );
+    expect(await screen.findByText('文件已被更新，请刷新后重试'))
+      .toBeInTheDocument();
+  });
+
+  it.each([
+    { scenario: '全部成功', code: undefined, status: 200, total: 2, notice: '已上传 2 个文件', error: undefined },
+    { scenario: '同名文件失败后继续', code: 'ENTERPRISE_SHARED_FILE_ALREADY_EXISTS', status: 409, total: 2, notice: '已上传 1 个文件', error: '相同网盘路径已存在' },
+    { scenario: '单文件超限后继续', code: 'ENTERPRISE_SHARED_FILE_TOO_LARGE', status: 413, total: 2, notice: '已上传 1 个文件', error: '共享文件超过服务端允许大小' },
+    { scenario: '写权限失效后停止', code: 'ENTERPRISE_SHARED_FILE_WRITE_FORBIDDEN', status: 403, total: 1, notice: undefined, error: '其余 1 个文件未处理' },
+    { scenario: '服务不可用后停止', code: 'ENTERPRISE_SERVICE_UNAVAILABLE', status: 503, total: 1, notice: undefined, error: '其余 1 个文件未处理' },
+    { scenario: '存储不可用后停止', code: 'ENTERPRISE_SHARED_FILE_STORAGE_UNAVAILABLE', status: 503, total: 1, notice: undefined, error: '其余 1 个文件未处理' }
+  ])('多文件按顺序上传：$scenario', async ({ code, status, total, notice, error }) => {
+    const user = userEvent.setup();
+    const firstUpload = createDeferred<Response>();
+    window.location.hash = '#/drive';
+    const hostBridge = createHostBridge();
+    hostBridge.readConnectionConfig = async () => ({
+      baseUrl: 'http://127.0.0.1:60764',
+      token: 'runtime-token'
+    });
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const runtimeFetch = async (
+      input: RequestInfo | URL,
+      init?: RequestInit
+    ) => {
+      const url = String(input);
+      const projectApiResponse = handleDefaultProjectApiRequest(url, init);
+      if (projectApiResponse !== undefined) return projectApiResponse;
+      fetchCalls.push({ url, init });
+      if (url.endsWith('/healthz')) return jsonResponse({ ok: true });
+      if (url.endsWith('/codex/status')) {
+        return jsonResponse(createCodexStatusResponse());
+      }
+      if (url.endsWith('/threads?status=active&limit=50')) {
+        return jsonResponse({ threads: [] });
+      }
+      if (url.endsWith('/enterprise/session')) {
+        return jsonResponse(createEnterpriseSessionResponse());
+      }
+      if (url.endsWith('/enterprise/shared-spaces?limit=100')) {
+        return jsonResponse(createSharedSpaceListResponse([
+          createSharedSpaceResponse({
+            permissions: { read: true, write: true, delete: false }
+          })
+        ]));
+      }
+      if (url.includes('/enterprise/shared-files?')) {
+        return jsonResponse(createSharedFileListResponse([]));
+      }
+      if (
+        url.includes('/enterprise/shared-spaces/space-design/files?')
+        && init?.method === 'POST'
+      ) {
+        const logicalPath = new URL(url).searchParams.get('logicalPath') ?? '';
+        if (logicalPath === 'first.txt') return firstUpload.promise;
+        return jsonResponse({
+          fileId: `file-${logicalPath}`,
+          spaceId: 'space-design',
+          logicalPath,
+          fileName: logicalPath,
+          sizeBytes: init.body instanceof File ? init.body.size : 0,
+          sha256: 'a'.repeat(64),
+          contentType: 'text/plain',
+          revision: 1,
+          created: true,
+          updatedAt: '2026-08-06T08:10:00Z'
+        });
+      }
+      throw new Error(`Unexpected request ${url}`);
+    };
+
+    render(
+      <App
+        fileService={createFileService()}
+        hostBridge={hostBridge}
+        runtimeFetch={runtimeFetch}
+        subscribeRunEvents={async () => undefined}
+      />
+    );
+
+    await screen.findByRole('navigation', { name: '授权共享空间' });
+    const navigation = screen.getByRole('navigation', { name: '授权共享空间' });
+    await user.click(await within(navigation).findByRole('button', { name: /设计资料/ }));
+
+    const first = new File(['first'], 'first.txt', { type: 'text/plain' });
+    const second = new File(['second'], 'second.txt', { type: 'text/plain' });
+    await user.upload(
+      screen.getByLabelText('选择上传到共享网盘的文件'),
+      [first, second]
+    );
+
+    await waitFor(() => expect(fetchCalls.filter(call => call.init?.method === 'POST')).toHaveLength(1));
+    expect(screen.getByRole('button', { name: '上传中 0/2' })).toBeDisabled();
+    firstUpload.resolve(code === undefined ? jsonResponse({
+      fileId: 'file-first.txt',
+      spaceId: 'space-design',
+      logicalPath: 'first.txt',
+      fileName: 'first.txt',
+      sizeBytes: first.size,
+      sha256: 'a'.repeat(64),
+      contentType: 'text/plain',
+      revision: 1,
+      created: true,
+      updatedAt: '2026-08-06T08:10:00Z'
+    }) : jsonResponse({ error: { code, message: code } }, { status }));
+
+    if (notice !== undefined) expect(await screen.findByText(notice)).toBeInTheDocument();
+    if (error !== undefined) {
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(error));
+    }
+    await waitFor(() => {
+      const uploadCalls = fetchCalls.filter(call => (
+        call.url.includes('/enterprise/shared-spaces/space-design/files?')
+        && call.init?.method === 'POST'
+      ));
+      expect(uploadCalls).toHaveLength(total);
+      expect(uploadCalls.map(call => new URL(call.url).searchParams.get('logicalPath')))
+        .toEqual(['first.txt', 'second.txt'].slice(0, total));
+    });
+  });
+
   it('updates the copyable URL when navigating between primary pages', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -11958,7 +12184,7 @@ function createSharedSpaceResponse(
     name: '设计资料',
     description: '团队设计文件',
     updatedAt: '2026-08-06T07:30:00Z',
-    permissions: { read: true, write: false },
+    permissions: { read: true, write: false, delete: false },
     ...overrides
   };
 }

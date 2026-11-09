@@ -1281,6 +1281,7 @@ function createClient(
     getSharedFileDetail: vi.fn(),
     downloadSharedFileContent: vi.fn(),
     uploadSharedFileContent: vi.fn(),
+    removeSharedFile: vi.fn(),
     listSkills: vi.fn(async () => []),
     listSkillSpaces: vi.fn(),
     uploadSkillVersion: vi.fn(),

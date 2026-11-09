@@ -406,7 +406,8 @@ const knowledgeDocumentUploadResponseSchema = z.object({
 });
 const sharedSpacePermissionsSchema = z.object({
   read: z.boolean().optional(),
-  write: z.boolean().optional()
+  write: z.boolean().optional(),
+  delete: z.boolean().optional()
 });
 const remoteSharedSpaceSchema = z.object({
   personal_owner_user_id: z.string().optional(),
@@ -863,6 +864,7 @@ export type EnterpriseRemoteSharedSpace = {
   permissions: {
     read: boolean;
     write: boolean;
+    delete: boolean;
   };
 };
 
@@ -1112,6 +1114,10 @@ export type EnterpriseHttpClient = {
   uploadSharedFileContent(
     input: EnterpriseSharedFileUploadInput
   ): Promise<EnterpriseRemoteSharedFileMutation>;
+  removeSharedFile(
+    accessToken: string,
+    input: { fileId: string; expectedRevision: number }
+  ): Promise<void>;
   hasAgentActivityGrant?(accessToken: string): Promise<boolean>;
   hasSkillContributionGrant?(accessToken: string): Promise<boolean>;
   getSkillContributions?(accessToken: string, endpoint: 'summary' | 'records' | 'detail', query: SkillContributionQuery | { skill_id?: string; version_id?: string }): Promise<SkillContributionResponse>;
@@ -2171,6 +2177,19 @@ export function createEnterpriseHttpClient(input: {
       return mapRemoteSharedFileMutation(parsed.data.data);
     },
 
+    async removeSharedFile(accessToken, request) {
+      await requestWithoutResult({
+        accessToken,
+        domain: 'shared-file',
+        method: 'POST',
+        path: '/api/v1/app/shared-files/remove',
+        body: {
+          file_id: request.fileId,
+          expected_revision: request.expectedRevision
+        }
+      });
+    },
+
     async hasAgentActivityGrant(accessToken) {
       const response = await requestJson({
         accessToken,
@@ -2754,7 +2773,8 @@ function mapRemoteSharedSpace(
     updatedAt: space.updated_at,
     permissions: {
       read: space.permissions?.read ?? true,
-      write: space.permissions?.write ?? false
+      write: space.permissions?.write ?? false,
+      delete: space.permissions?.delete ?? false
     }
   };
 }
@@ -3282,6 +3302,13 @@ function mapResponseCode(
     && upstreamCode === 'revision_conflict'
   ) {
     return 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT';
+  }
+  if (
+    statusCode === 409
+    && domain === 'shared-file'
+    && upstreamCode === 'file_in_use'
+  ) {
+    return 'ENTERPRISE_SHARED_FILE_IN_USE';
   }
   if (statusCode === 409 && domain === 'shared-file') {
     return 'ENTERPRISE_SHARED_FILE_REVISION_CONFLICT';
